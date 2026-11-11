@@ -33,7 +33,7 @@ final class ShelfController: NSObject, NSWindowDelegate, NSDraggingDestination {
 
         // Debug aid: `Tuck --show-dropzone` shows the drop box once at launch.
         if CommandLine.arguments.contains("--show-dropzone") {
-            DispatchQueue.main.asyncAfter(deadline: .now() + 1) { [weak self] in self?.dropZone.show(hold: true) }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1) { [weak self] in self?.dropZone.show(holdFor: 3) }
         }
 
         NotificationCenter.default.addObserver(
@@ -103,8 +103,7 @@ final class ShelfController: NSObject, NSWindowDelegate, NSDraggingDestination {
     @objc private func openFolder() { NSWorkspace.shared.open(store.root) }
     @objc private func toggleDropZone() { dropZone.enabled.toggle() }
     @objc private func previewDropZone() {
-        dropZone.show(hold: true)
-        DispatchQueue.main.asyncAfter(deadline: .now() + 3) { [weak self] in self?.dropZone.hide() }
+        dropZone.show(holdFor: 3)
     }
 
     // MARK: - Popover

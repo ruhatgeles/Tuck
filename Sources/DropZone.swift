@@ -13,7 +13,11 @@ final class DropZoneController: NSObject {
     private var lastDragChange = NSPasteboard(name: .drag).changeCount
     private var lastCheck: TimeInterval = 0
     private var isHiding = false
-    private var holdOpen = false
+    /// Uptime until which the box stays open even with the mouse button up
+    /// (menu preview, or showing the "added" confirmation). Never indefinite.
+    private var holdUntil: TimeInterval = 0
+
+    private var now: TimeInterval { ProcessInfo.processInfo.systemUptime }
 
     static let size = NSSize(width: 280, height: 132)
 
@@ -42,7 +46,7 @@ final class DropZoneController: NSObject {
     }
 
     private func mouseDragged() {
-        guard panel?.isVisible != true else { return }
+        guard panel == nil else { return }
         let now = ProcessInfo.processInfo.systemUptime
         guard now - lastCheck > 0.15 else { return }
         lastCheck = now
@@ -55,12 +59,12 @@ final class DropZoneController: NSObject {
 
     // MARK: - Panel
 
-    /// - Parameter hold: keep open regardless of mouse state (menu preview).
-    func show(hold: Bool = false) {
+    /// - Parameter holdFor: seconds to stay open even if no drag is in progress (preview).
+    func show(holdFor: TimeInterval = 0) {
         let panel = self.panel ?? makePanel()
         self.panel = panel
         isHiding = false
-        holdOpen = hold
+        holdUntil = now + holdFor
         zone?.reset(count: store.items.count)
 
         let target = targetFrame()
@@ -91,8 +95,10 @@ final class DropZoneController: NSObject {
                 panel.animator().setFrame(up, display: true)
                 panel.animator().alphaValue = 0
             }, completionHandler: { [weak self] in
-                guard let self, self.isHiding else { return }
+                // Always finish closing once the fade started, so a half-hidden,
+                // invisible panel can never block future drags.
                 panel.orderOut(nil)
+                guard let self, self.panel === panel else { return }
                 // Free the window entirely; it is rebuilt on the next drag.
                 self.panel = nil
                 self.zone = nil
@@ -101,13 +107,14 @@ final class DropZoneController: NSObject {
         }
     }
 
-    /// While shown, poll the mouse button: once released (drop elsewhere / cancelled) close.
+    /// While shown, poll the mouse button: once it is released (dropped anywhere or
+    /// cancelled) and no hold is active, close. This cannot get stuck open.
     private func startWatching() {
         watchTimer?.invalidate()
         let t = Timer(timeInterval: 0.2, repeats: true) { [weak self] _ in
             guard let self else { return }
-            if NSEvent.pressedMouseButtons & 1 == 0 && !self.holdOpen {
-                self.hide(after: 0.35)
+            if NSEvent.pressedMouseButtons & 1 == 0 && self.now >= self.holdUntil {
+                self.hide(after: 0.3)
             }
         }
         RunLoop.main.add(t, forMode: .common)
@@ -149,20 +156,16 @@ final class DropZoneController: NSObject {
 
         let zone = DropZoneView(frame: effect.bounds.insetBy(dx: 10, dy: 10))
         zone.autoresizingMask = [.width, .height]
-        zone.onEnter = { [weak self] in self?.holdOpen = true }
-        zone.onExit = { [weak self] in self?.holdOpen = false }
+        zone.onClick = { [weak self] in self?.hide() }
         zone.onDrop = { [weak self] info in
             guard let self else { return false }
             let ok = self.store.ingest(info.draggingPasteboard)
-            if !ok { self.holdOpen = false }
             if ok {
-                self.holdOpen = true
-                self.zone?.showDone()
+                // Show the confirmation briefly; the watch timer closes it afterwards.
+                self.holdUntil = self.now + 0.9
                 self.isHiding = false
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.9) { [weak self] in
-                    self?.holdOpen = false
-                    self?.hide()
-                }
+                self.zone?.showDone()
+                if self.watchTimer?.isValid != true { self.startWatching() }
             }
             return ok
         }
@@ -175,8 +178,7 @@ final class DropZoneController: NSObject {
 
 /// Dashed drop target with icon + label; turns accent-colored while targeted.
 final class DropZoneView: NSView {
-    var onEnter: (() -> Void)?
-    var onExit: (() -> Void)?
+    var onClick: (() -> Void)?
     var onDrop: ((NSDraggingInfo) -> Bool)?
 
     private let icon = NSImageView()
@@ -246,7 +248,6 @@ final class DropZoneView: NSView {
 
     override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation {
         targeted = true
-        onEnter?()
         return .copy
     }
 
@@ -254,8 +255,9 @@ final class DropZoneView: NSView {
 
     override func draggingExited(_ sender: NSDraggingInfo?) {
         targeted = false
-        onExit?()
     }
+
+    override func mouseDown(with event: NSEvent) { onClick?() }
 
     override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
         targeted = false
