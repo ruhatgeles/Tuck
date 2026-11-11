@@ -27,14 +27,14 @@ func render(_ px: Int) -> Data {
     path.fill()
     NSGraphicsContext.restoreGraphicsState()
 
-    NSGradient(colors: [NSColor(srgbRed: 0.36, green: 0.40, blue: 1.00, alpha: 1),
-                        NSColor(srgbRed: 0.16, green: 0.74, blue: 0.90, alpha: 1)])!
+    // Monochrome: graphite → black, white glyphs.
+    NSGradient(colors: [NSColor(white: 0.24, alpha: 1), NSColor(white: 0.04, alpha: 1)])!
         .draw(in: path, angle: -90)
 
     // Menu bar strip across the top of the squircle.
     NSGraphicsContext.saveGraphicsState()
     path.addClip()
-    NSColor.white.withAlphaComponent(0.22).setFill()
+    NSColor.white.withAlphaComponent(0.12).setFill()
     NSRect(x: body.minX, y: body.maxY - 150 * k, width: body.width, height: 150 * k).fill()
     // Hidden-icon dots + chevron in the strip.
     NSColor.white.withAlphaComponent(0.9).setFill()
