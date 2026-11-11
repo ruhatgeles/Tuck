@@ -54,6 +54,20 @@ final class BarHider: NSObject {
         }
         applyRoles()
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in self?.collapse() }
+        // Debug aid: `Tuck --toggle-test` flips hide/show 12× and logs how long each takes.
+        if CommandLine.arguments.contains("--toggle-test") { runToggleTest(remaining: 12) }
+    }
+
+    private func runToggleTest(remaining: Int) {
+        guard remaining > 0 else { return }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { [weak self] in
+            guard let self else { return }
+            let t0 = DispatchTime.now().uptimeNanoseconds
+            self.isCollapsed ? self.expand() : self.collapse()
+            let ms = Double(DispatchTime.now().uptimeNanoseconds - t0) / 1_000_000
+            FileHandle.standardError.write(Data(String(format: "toggle collapsed=%d took %.2f ms\n", self.isCollapsed ? 1 : 0, ms).utf8))
+            self.runToggleTest(remaining: remaining - 1)
+        }
     }
 
     /// Gives the right-hand item the arrow and the left-hand one the separator look.
