@@ -11,8 +11,17 @@ import ServiceManagement
 ///   500–700 left items vanish (wanted) · >=800 separator dropped, nothing hidden.
 /// So the collapsed width is ~90% of the area right of the notch (or half the screen).
 final class BarHider: NSObject {
-    private let toggle = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
-    private let separator = NSStatusBar.system.statusItem(withLength: 12)
+    // Two status items whose *roles* follow their position: the right one is always the
+    // arrow (toggle), the left one the "│" separator. If the user ⌘-drags them past each
+    // other while arranging icons, the roles simply swap instead of hiding breaking.
+    private let itemA = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
+    private let itemB = NSStatusBar.system.statusItem(withLength: 12)
+    private var swapped: Bool {
+        get { UserDefaults.standard.bool(forKey: "hiderSwapped") }
+        set { UserDefaults.standard.set(newValue, forKey: "hiderSwapped") }
+    }
+    private var toggle: NSStatusItem { swapped ? itemB : itemA }
+    private var separator: NSStatusItem { swapped ? itemA : itemB }
 
     private let expandedLength: CGFloat = 12
 
@@ -36,21 +45,38 @@ final class BarHider: NSObject {
 
     override init() {
         super.init()
-        toggle.autosaveName = "tuck.toggle"
-        separator.autosaveName = "tuck.separator"
-
-        if let b = toggle.button {
-            b.target = self
-            b.action = #selector(toggleClicked)
-            b.sendAction(on: [.leftMouseUp, .rightMouseUp])
+        itemA.autosaveName = "tuck.toggle"
+        itemB.autosaveName = "tuck.separator"
+        for item in [itemA, itemB] {
+            item.button?.target = self
+            item.button?.action = #selector(toggleClicked)
+            item.button?.sendAction(on: [.leftMouseUp, .rightMouseUp])
         }
+        applyRoles()
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in self?.collapse() }
+    }
+
+    /// Gives the right-hand item the arrow and the left-hand one the separator look.
+    private func applyRoles() {
+        separator.length = isCollapsed ? collapsedLength : expandedLength
+        toggle.length = NSStatusItem.variableLength
         if let b = separator.button {
             b.image = Self.separatorImage
-            b.appearsDisabled = true
             b.toolTip = "⌘ basılı tutup gizlenecek ikonları bu çizginin soluna sürükle"
         }
+        toggle.button?.toolTip = "Gizli ikonları göster / gizle (sağ tık: ayarlar)"
         updateIcon()
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in self?.collapse() }
+    }
+
+    /// Re-checks which of our two items is on the right. Only meaningful while expanded
+    /// (when collapsed the separator is huge and its frame is not a useful position).
+    private func normalizeRoles() {
+        guard !isCollapsed,
+              let tX = toggle.button?.window?.frame.minX,
+              let sX = separator.button?.window?.frame.minX,
+              tX < sX else { return }
+        swapped.toggle()
+        applyRoles()
     }
 
     // MARK: - Actions
@@ -65,6 +91,7 @@ final class BarHider: NSObject {
     }
 
     private func collapse() {
+        normalizeRoles()
         // Only collapse if the separator really sits left of the toggle,
         // otherwise we would push our own toggle off-screen.
         guard let sepX = separator.button?.window?.frame.minX,
