@@ -40,7 +40,9 @@ final class ClipboardViewController: NSViewController, NSTableViewDataSource, NS
     // MARK: - Layout
 
     override func loadView() {
-        let root = NSView(frame: NSRect(x: 0, y: 0, width: 380, height: 470))
+        // Dropping text, links, images or files on the list adds them and copies them.
+        let root = DropView(frame: NSRect(x: 0, y: 0, width: 380, height: 470))
+        root.onDrop = { [weak self] info in self?.controller.addFromDrop(info.draggingPasteboard) ?? false }
 
         search.placeholderString = "Ara…"
         search.delegate = self
@@ -70,7 +72,7 @@ final class ClipboardViewController: NSViewController, NSTableViewDataSource, NS
         hintLabel.font = .systemFont(ofSize: 10)
         hintLabel.textColor = .tertiaryLabelColor
         hintLabel.lineBreakMode = .byTruncatingTail
-        hintLabel.toolTip = "↩ yapıştır · ⇧↩ düz metin yapıştır · ⌘↩ sadece kopyala · ⌘1…9 hızlı seç\n⌥P sabitle · ⌥⌫ sil · ⌥⌘⌫ geçmişi temizle (📌 hariç) · esc kapat"
+        hintLabel.toolTip = "↩ yapıştır · ⇧↩ düz metin yapıştır · ⌘↩ sadece kopyala · ⌘1…9 hızlı seç\n⌥P sabitle · ⌥⌫ sil · ⌥⌘⌫ geçmişi temizle (sabitler hariç) · esc kapat\nBuraya metin, bağlantı, görsel ya da dosya sürükleyerek de ekleyebilirsin."
         hintLabel.stringValue = "↩ yapıştır · ⇧↩ düz · ⌥P sabitle · ⌥⌫ sil"
 
         gearButton.image = NSImage(systemSymbolName: "gearshape", accessibilityDescription: "Ayarlar")
@@ -162,7 +164,18 @@ final class ClipboardViewController: NSViewController, NSTableViewDataSource, NS
             emptyLabel.stringValue = "Sonuç yok"
         }
         emptyLabel.isHidden = !rows.isEmpty && !controller.paused
-        permissionButton.isHidden = !(controller.autoPaste && !AXIsProcessTrusted())
+        if controller.accessNeedsAttention {
+            // Most important: without this macOS hides what other apps copy.
+            permissionButton.title = "Diğer uygulamalardan kopyalananlar için izin ver"
+            permissionButton.toolTip = "macOS, Tuck'ın panoyu okumasını kısıtlıyor. Ayarlar'da Tuck için \"Her Zaman İzin Ver\" seç."
+            permissionButton.isHidden = false
+        } else if controller.autoPaste && !AXIsProcessTrusted() {
+            permissionButton.title = "Otomatik yapıştırma için izin ver"
+            permissionButton.toolTip = "Seçtiğin öğeyi yapıştırmak için Erişilebilirlik izni gerekir."
+            permissionButton.isHidden = false
+        } else {
+            permissionButton.isHidden = true
+        }
     }
 
     func numberOfRows(in tableView: NSTableView) -> Int { rows.count }
@@ -182,7 +195,11 @@ final class ClipboardViewController: NSViewController, NSTableViewDataSource, NS
         if let app = e.app { parts.append(ClipboardController.appName(app)) }
         parts.append(Self.relative.localizedString(for: e.lastCopied, relativeTo: Date()))
         if e.copies > 1 { parts.append("×\(e.copies)") }
-        cell.subtitleField.stringValue = (e.pinned ? "📌 " : "") + parts.joined(separator: " · ")
+        if e.origin == "drop" { parts.insert("Sürükle-bırak", at: 0) }
+        cell.subtitleField.stringValue = parts.joined(separator: " · ")
+        cell.pinView.isHidden = !e.pinned
+        cell.infoButton.target = self
+        cell.infoButton.action = #selector(showInfo(_:))
         cell.shortcutField.stringValue = row < 9 ? "⌘\(row + 1)" : ""
         cell.toolTip = e.kind == .image ? nil : e.title.replacingOccurrences(of: " ⏎ ", with: "\n")
 
@@ -258,7 +275,10 @@ final class ClipboardViewController: NSViewController, NSTableViewDataSource, NS
         reload()
     }
 
-    @objc private func grantPermission() { controller.requestAccessibility() }
+    @objc private func grantPermission() {
+        if controller.accessNeedsAttention { controller.openPasteboardPrivacySettings() }
+        else { controller.requestAccessibility() }
+    }
 
     @objc private func pinSelected() { if let e = selected { controller.store.togglePin(e.id); reload() } }
     @objc private func deleteSelected() {
@@ -268,6 +288,23 @@ final class ClipboardViewController: NSViewController, NSTableViewDataSource, NS
         reload()
         if !rows.isEmpty { table.selectRowIndexes([min(r, rows.count - 1)], byExtendingSelection: false) }
     }
+    @objc private func showInfo(_ sender: NSButton) {
+        let r = table.row(for: sender)
+        guard rows.indices.contains(r) else { return }
+        ClipInfoViewController.show(for: rows[r], store: store, relativeTo: sender)
+    }
+
+    func debugShowFirstInfo() {
+        guard !rows.isEmpty, let cell = table.view(atColumn: 0, row: 0, makeIfNecessary: false) as? ClipCell else { return }
+        ClipInfoViewController.show(for: rows[0], store: store, relativeTo: cell.infoButton)
+    }
+
+    @objc private func infoFromMenu() {
+        guard table.clickedRow >= 0, rows.indices.contains(table.clickedRow),
+              let cell = table.view(atColumn: 0, row: table.clickedRow, makeIfNecessary: false) as? ClipCell else { return }
+        ClipInfoViewController.show(for: rows[table.clickedRow], store: store, relativeTo: cell.infoButton)
+    }
+
     @objc private func pasteSelected() { useSelected(plain: false, paste: true) }
     @objc private func pastePlainSelected() { useSelected(plain: true, paste: true) }
     @objc private func copySelected() { useSelected(plain: false, paste: false) }
@@ -343,7 +380,10 @@ final class ClipboardViewController: NSViewController, NSTableViewDataSource, NS
         if e.kind != .image { add("Düz metin olarak yapıştır", #selector(pastePlainSelected)) }
         add("Sadece kopyala", #selector(copySelected))
         menu.addItem(.separator())
-        add(e.pinned ? "Sabitlemeyi kaldır" : "Sabitle 📌", #selector(pinSelected))
+        add(e.pinned ? "Sabitlemeyi kaldır" : "Sabitle", #selector(pinSelected))
+        menu.items.last?.image = NSImage(systemSymbolName: e.pinned ? "pin.slash" : "pin", accessibilityDescription: nil)
+        add("Bilgi", #selector(infoFromMenu))
+        menu.items.last?.image = NSImage(systemSymbolName: "info.circle", accessibilityDescription: nil)
         add("Rafa ekle (dosya olarak sakla)", #selector(shelfSelected))
         if let app = e.app {
             add("\(ClipboardController.appName(app)) kopyalarını yok say", #selector(ignoreAppSelected))
@@ -362,6 +402,8 @@ final class ClipCell: NSTableCellView {
     let titleField = NSTextField(labelWithString: "")
     let subtitleField = NSTextField(labelWithString: "")
     let shortcutField = NSTextField(labelWithString: "")
+    let pinView = NSImageView()
+    let infoButton = NSButton()
     private var iconW: NSLayoutConstraint!
     private var iconH: NSLayoutConstraint!
 
@@ -381,12 +423,29 @@ final class ClipCell: NSTableCellView {
         shortcutField.font = .monospacedDigitSystemFont(ofSize: 10, weight: .regular)
         shortcutField.textColor = .tertiaryLabelColor
 
-        let texts = NSStackView(views: [titleField, subtitleField])
+        // Monochrome pin, shown before the subtitle of pinned items.
+        pinView.image = NSImage(systemSymbolName: "pin.fill", accessibilityDescription: "Sabitlenmiş")
+        pinView.symbolConfiguration = .init(pointSize: 8.5, weight: .semibold)
+        pinView.contentTintColor = .secondaryLabelColor
+        pinView.setContentHuggingPriority(.required, for: .horizontal)
+        let subtitleRow = NSStackView(views: [pinView, subtitleField])
+        subtitleRow.orientation = .horizontal
+        subtitleRow.spacing = 3
+
+        // Tiny, quiet "i" button: details about where/how the item was copied.
+        infoButton.image = NSImage(systemSymbolName: "info.circle", accessibilityDescription: "Bilgi")
+        infoButton.symbolConfiguration = .init(pointSize: 10, weight: .regular)
+        infoButton.isBordered = false
+        infoButton.contentTintColor = .quaternaryLabelColor
+        infoButton.toolTip = "Bilgi"
+        infoButton.setContentHuggingPriority(.required, for: .horizontal)
+
+        let texts = NSStackView(views: [titleField, subtitleRow])
         texts.orientation = .vertical
         texts.alignment = .leading
         texts.spacing = 1
 
-        for v in [iconView, texts, shortcutField] as [NSView] {
+        for v in [iconView, texts, shortcutField, infoButton] as [NSView] {
             v.translatesAutoresizingMaskIntoConstraints = false
             addSubview(v)
         }
@@ -402,10 +461,18 @@ final class ClipCell: NSTableCellView {
             texts.leadingAnchor.constraint(equalTo: iconView.trailingAnchor, constant: 8),
             texts.centerYAnchor.constraint(equalTo: centerYAnchor),
             texts.trailingAnchor.constraint(lessThanOrEqualTo: shortcutField.leadingAnchor, constant: -6),
-            shortcutField.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -6),
+            shortcutField.trailingAnchor.constraint(equalTo: infoButton.leadingAnchor, constant: -5),
             shortcutField.centerYAnchor.constraint(equalTo: centerYAnchor),
+            infoButton.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -4),
+            infoButton.centerYAnchor.constraint(equalTo: centerYAnchor),
         ])
+        addTrackingArea(NSTrackingArea(rect: .zero, options: [.mouseEnteredAndExited, .activeAlways, .inVisibleRect],
+                                       owner: self, userInfo: nil))
     }
+
+    // The "i" stays faint and only gets a little clearer while hovering the row.
+    override func mouseEntered(with event: NSEvent) { infoButton.contentTintColor = .secondaryLabelColor }
+    override func mouseExited(with event: NSEvent) { infoButton.contentTintColor = .quaternaryLabelColor }
 
     required init?(coder: NSCoder) { fatalError() }
 

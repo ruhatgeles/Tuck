@@ -80,7 +80,12 @@ final class ClipboardController: NSObject, NSWindowDelegate {
         startMonitoring()
         // Debug aid: `Tuck --show-clipboard` opens the history panel at launch.
         if CommandLine.arguments.contains("--show-clipboard") {
-            DispatchQueue.main.asyncAfter(deadline: .now() + 1) { [weak self] in self?.togglePanel() }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1) { [weak self] in
+                self?.togglePanel()
+                if CommandLine.arguments.contains("--show-info") {
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { self?.panelVC?.debugShowFirstInfo() }
+                }
+            }
         }
     }
 
@@ -119,9 +124,21 @@ final class ClipboardController: NSObject, NSWindowDelegate {
 
         let types = Set((pb.types ?? []).map(\.rawValue))
         let app = NSWorkspace.shared.frontmostApplication?.bundleIdentifier
-        guard Self.shouldRecord(types: types, app: app, ignoredApps: ignoredApps,
-                                saveImages: saveImages, saveFiles: saveFiles) else { return }
-        store.capture(pb, app: app)
+        let record = Self.shouldRecord(types: types, app: app, ignoredApps: ignoredApps,
+                                       saveImages: saveImages, saveFiles: saveFiles)
+        let items = pb.pasteboardItems?.count ?? 0
+        let stored = record && store.capture(pb, app: app)
+        // Types announced but nothing readable = macOS blocked the read (pasteboard privacy).
+        let blocked = !types.isEmpty && items == 0
+        if blocked != accessBlocked {
+            accessBlocked = blocked
+            panelVC?.reload()
+            popoverVC?.reload()
+        }
+        if debug {
+            // Type names and app ids only — never contents.
+            Self.debugLog("change=\(count) app=\(app ?? "-") access=\(Self.accessName) items=\(items) types=\(types.sorted()) record=\(record) stored=\(stored)")
+        }
     }
 
     /// Filtering rules: password managers / transient data, ignored apps, and the
@@ -139,6 +156,70 @@ final class ClipboardController: NSObject, NSWindowDelegate {
     }
 
     func ignoreNextCopy() { ignoreNext = true }
+
+    private var debug: Bool { defaults.bool(forKey: "clipDebug") }
+
+    /// True when the last copy could not be read because macOS denied pasteboard access.
+    private(set) var accessBlocked = false
+
+    /// macOS asks (or refuses) before letting apps read what other apps copied.
+    var accessNeedsAttention: Bool {
+        if accessBlocked { return true }
+        guard #available(macOS 15.4, *) else { return false }
+        let b = NSPasteboard.general.accessBehavior
+        return b == .alwaysDeny || b == .ask
+    }
+
+    func openPasteboardPrivacySettings() {
+        let candidates = [
+            "x-apple.systempreferences:com.apple.settings.PrivacySecurity.extension?Privacy_Pasteboard",
+            "x-apple.systempreferences:com.apple.preference.security?Privacy_Pasteboard",
+            "x-apple.systempreferences:com.apple.settings.PrivacySecurity.extension",
+        ]
+        for c in candidates {
+            if let url = URL(string: c), NSWorkspace.shared.open(url) { return }
+        }
+    }
+
+    /// Debug log (enable: `defaults write io.github.ruhatgeles.Tuck clipDebug -bool true`).
+    /// Written to ~/Library/Logs/Tuck/clipboard.log; never contains clipboard contents.
+    private static func debugLog(_ line: String) {
+        let dir = FileManager.default.urls(for: .libraryDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("Logs/Tuck", isDirectory: true)
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let url = dir.appendingPathComponent("clipboard.log")
+        let stamp = ISO8601DateFormatter().string(from: Date())
+        let data = Data("\(stamp) \(line)\n".utf8)
+        if let h = try? FileHandle(forWritingTo: url) {
+            h.seekToEndOfFile(); h.write(data); try? h.close()
+        } else {
+            try? data.write(to: url)
+        }
+    }
+
+    /// Something was dropped on the clipboard list: record it and put it on the clipboard.
+    @discardableResult
+    func addFromDrop(_ pb: NSPasteboard) -> Bool {
+        guard store.capture(pb, app: nil, origin: "drop"), let entry = store.entries.first(where: { !$0.pinned })
+            ?? store.entries.first else { return false }
+        let general = NSPasteboard.general
+        if store.write(entry, to: general) {
+            ownChange = general.changeCount
+            lastChange = general.changeCount
+        }
+        return true
+    }
+
+    static var accessName: String {
+        guard #available(macOS 15.4, *) else { return "n/a" }
+        switch NSPasteboard.general.accessBehavior {
+        case .default: return "default"
+        case .ask: return "ask"
+        case .alwaysAllow: return "alwaysAllow"
+        case .alwaysDeny: return "alwaysDeny"
+        @unknown default: return "unknown"
+        }
+    }
 
     // MARK: Using an entry
 
@@ -260,8 +341,12 @@ final class ClipboardController: NSObject, NSWindowDelegate {
     }
 
     func windowDidResignKey(_ notification: Notification) {
-        // Clicking anywhere else closes the panel (like a menu).
-        if (notification.object as? NSWindow) === panel { closePanel() }
+        // Clicking anywhere else closes the panel (like a menu) — but not when focus
+        // just moved to one of our own windows, e.g. the item info popover.
+        guard (notification.object as? NSWindow) === panel else { return }
+        DispatchQueue.main.async { [weak self] in
+            if NSApp.keyWindow == nil { self?.closePanel() }
+        }
     }
 
     // MARK: Settings menu
@@ -302,7 +387,7 @@ final class ClipboardController: NSObject, NSWindowDelegate {
                           #selector(toggleAutoPaste), on: autoPaste))
         menu.addItem(item("Görselleri kaydet", #selector(toggleImages), on: saveImages))
         menu.addItem(item("Dosyaları kaydet", #selector(toggleFiles), on: saveFiles))
-        menu.addItem(item("Çıkışta geçmişi temizle (📌 hariç)", #selector(toggleClearOnQuit), on: clearOnQuit))
+        menu.addItem(item("Çıkışta geçmişi temizle (sabitler hariç)", #selector(toggleClearOnQuit), on: clearOnQuit))
 
         if !ignoredApps.isEmpty {
             let apps = NSMenu()
@@ -315,8 +400,8 @@ final class ClipboardController: NSObject, NSWindowDelegate {
         }
 
         menu.addItem(.separator())
-        menu.addItem(item("Geçmişi temizle (📌 hariç)", #selector(clearHistory)))
-        menu.addItem(item("Her şeyi sil (📌 dahil)…", #selector(clearEverything)))
+        menu.addItem(item("Geçmişi temizle (sabitler hariç)", #selector(clearHistory)))
+        menu.addItem(item("Her şeyi sil (sabitler dahil)…", #selector(clearEverything)))
         return menu
     }
 
@@ -341,7 +426,7 @@ final class ClipboardController: NSObject, NSWindowDelegate {
     @objc private func clearEverything() {
         let alert = NSAlert()
         alert.messageText = "Tüm pano geçmişi silinsin mi?"
-        alert.informativeText = "Sabitlenmiş (📌) öğeler de silinir. Bu işlem geri alınamaz."
+        alert.informativeText = "Sabitlenmiş öğeler de silinir. Bu işlem geri alınamaz."
         alert.addButton(withTitle: "Hepsini Sil")
         alert.addButton(withTitle: "Vazgeç")
         alert.buttons.first?.hasDestructiveAction = true

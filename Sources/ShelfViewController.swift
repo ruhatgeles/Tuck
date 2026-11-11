@@ -71,7 +71,7 @@ final class ShelfViewController: NSViewController, NSTableViewDataSource, NSTabl
         scroll.autohidesScrollers = true
 
         // Footer
-        let footer = NSTextField(labelWithString: "30 gün sonra silinir (📌 hariç) · Dışarı sürükle · ⌘V ekle")
+        let footer = NSTextField(labelWithString: "30 gün sonra silinir (sabitler hariç) · Dışarı sürükle · ⌘V ekle")
         footer.font = .systemFont(ofSize: 10)
         footer.textColor = .tertiaryLabelColor
         footer.alignment = .center
@@ -125,6 +125,22 @@ final class ShelfViewController: NSViewController, NSTableViewDataSource, NSTabl
 
     func numberOfRows(in tableView: NSTableView) -> Int { store.items.count }
 
+    /// Subtitle text, prefixed with a small monochrome pin for pinned items.
+    private static func subtitle(_ text: String, pinned: Bool, color: NSColor) -> NSAttributedString {
+        let attrs: [NSAttributedString.Key: Any] = [.font: NSFont.systemFont(ofSize: 10), .foregroundColor: color]
+        let out = NSMutableAttributedString()
+        if pinned, let pin = NSImage(systemSymbolName: "pin.fill", accessibilityDescription: "Sabit")?
+            .withSymbolConfiguration(.init(pointSize: 8, weight: .semibold).applying(.init(paletteColors: [color]))) {
+            let a = NSTextAttachment()
+            a.image = pin
+            a.bounds = NSRect(x: 0, y: -1, width: pin.size.width, height: pin.size.height)
+            out.append(NSAttributedString(attachment: a))
+            out.append(NSAttributedString(string: " ", attributes: attrs))
+        }
+        out.append(NSAttributedString(string: text, attributes: attrs))
+        return out
+    }
+
     func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
         let cell = (tableView.makeView(withIdentifier: ShelfCell.id, owner: nil) as? ShelfCell) ?? ShelfCell()
         let item = store.items[row]
@@ -139,14 +155,16 @@ final class ShelfViewController: NSViewController, NSTableViewDataSource, NSTabl
         if let size = item.size { parts.append(ByteCountFormatter.string(fromByteCount: size, countStyle: .file)) }
         else if item.kind == .file { parts.append("Klasör") }
         if item.isPinned {
-            parts.append("📌 Sabit")
+            parts.append("Sabit")
             cell.subtitleField.textColor = .secondaryLabelColor
         } else {
             let days = store.daysLeft(item)
             parts.append("\(days) gün kaldı")
             cell.subtitleField.textColor = days <= 3 ? .systemOrange : .secondaryLabelColor
         }
-        cell.subtitleField.stringValue = parts.joined(separator: " · ")
+        cell.subtitleField.attributedStringValue = Self.subtitle(parts.joined(separator: " · "),
+                                                                 pinned: item.isPinned,
+                                                                 color: cell.subtitleField.textColor ?? .secondaryLabelColor)
         let url = store.url(for: item)
         let key = item.id.uuidString as NSString
         cell.itemID = item.id
@@ -233,7 +251,7 @@ final class ShelfViewController: NSViewController, NSTableViewDataSource, NSTabl
     @objc private func clearAll() {
         let alert = NSAlert()
         alert.messageText = "Raftaki tüm öğeler silinsin mi?"
-        alert.informativeText = "Sabitlenmiş (📌) öğeler kalır. Bu işlem geri alınamaz; orijinal dosyalarınız etkilenmez."
+        alert.informativeText = "Sabitlenmiş öğeler kalır. Bu işlem geri alınamaz; orijinal dosyalarınız etkilenmez."
         alert.addButton(withTitle: "Sil")
         alert.addButton(withTitle: "Vazgeç")
         alert.buttons.first?.hasDestructiveAction = true
@@ -255,6 +273,9 @@ final class ShelfViewController: NSViewController, NSTableViewDataSource, NSTabl
         for (title, sel) in entries {
             let mi = NSMenuItem(title: title, action: sel, keyEquivalent: "")
             mi.target = self
+            if sel == #selector(pinClicked) {
+                mi.image = NSImage(systemSymbolName: pinned ? "pin.slash" : "pin", accessibilityDescription: nil)
+            }
             menu.addItem(mi)
         }
         menu.addItem(.separator())

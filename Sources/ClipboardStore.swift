@@ -14,6 +14,8 @@ struct ClipEntry: Codable, Equatable {
     var app: String?         // bundle id of the app it was copied from
     var pinned: Bool
     var bytes: Int
+    var formats: [String]? = nil   // every type the source app offered (for the info panel)
+    var origin: String? = nil      // "drop" when added by drag & drop, nil for normal copies
 }
 
 /// Clipboard history. Metadata lives in memory + index.json; the actual pasteboard
@@ -22,8 +24,15 @@ final class ClipboardStore {
     /// Types we keep. Everything else (private app formats) is dropped to stay small.
     static let keptTypes: Set<String> = [
         "public.utf8-plain-text", "public.rtf", "com.apple.flat-rtfd", "public.html",
-        "public.png", "public.tiff", "public.jpeg", "public.file-url", "public.url", "public.url-name",
+        "public.png", "public.tiff", "public.jpeg", "public.heic", "public.heif",
+        "public.file-url", "public.url", "public.url-name",
     ]
+    /// Older / alternative plain-text flavours some apps offer instead of UTF-8.
+    private static let legacyTextTypes = [
+        "public.utf16-plain-text", "public.utf16-external-plain-text", "NSStringPboardType",
+        "com.apple.traditional-mac-plain-text",
+    ]
+    static let imageKeys = ["public.png", "public.jpeg", "public.heic", "public.heif", "public.tiff"]
     static let maxEntryBytes = 25 * 1024 * 1024
 
     let root: URL
@@ -56,13 +65,23 @@ final class ClipboardStore {
 
     /// Stores the pasteboard contents. Returns true if something was added or bumped.
     @discardableResult
-    func capture(_ pb: NSPasteboard, app: String?) -> Bool {
+    func capture(_ pb: NSPasteboard, app: String?, origin: String? = nil) -> Bool {
         guard let items = pb.pasteboardItems, !items.isEmpty else { return false }
+        let formats = Array(Set(items.flatMap { $0.types.map(\.rawValue) })).sorted()
         var payload: [[String: Data]] = []
         for item in items {
             var dict: [String: Data] = [:]
             for t in item.types where Self.keptTypes.contains(t.rawValue) {
                 if let d = item.data(forType: t) { dict[t.rawValue] = d }
+            }
+            // Apps that only offer UTF-16 / legacy text: normalise to UTF-8.
+            if dict["public.utf8-plain-text"] == nil {
+                for t in Self.legacyTextTypes where item.types.contains(.init(t)) {
+                    if let str = item.string(forType: .init(t)) ?? item.data(forType: .init(t)).flatMap(Self.decodeText) {
+                        dict["public.utf8-plain-text"] = Data(str.utf8)
+                        break
+                    }
+                }
             }
             // Keep one image representation: PNG is far smaller than TIFF.
             if let tiff = dict["public.tiff"] {
@@ -72,6 +91,10 @@ final class ClipboardStore {
                 if dict["public.png"] != nil { dict["public.tiff"] = nil }
             }
             if !dict.isEmpty { payload.append(dict) }
+        }
+        // Last resort: let AppKit convert whatever text the pasteboard has.
+        if payload.isEmpty, let str = pb.string(forType: .string) {
+            payload = [["public.utf8-plain-text": Data(str.utf8)]]
         }
         guard !payload.isEmpty else { return false }
         let bytes = payload.reduce(0) { $0 + $1.values.reduce(0) { $0 + $1.count } }
@@ -84,6 +107,8 @@ final class ClipboardStore {
             entries[i].lastCopied = now
             entries[i].copies += 1
             entries[i].app = app ?? entries[i].app
+            entries[i].formats = formats
+            entries[i].origin = origin
             let id = entries[i].id
             writePayload(payload, id: id) // latest formatting wins
             sortEntries()
@@ -94,7 +119,7 @@ final class ClipboardStore {
 
         let entry = ClipEntry(id: UUID(), kind: info.kind, title: info.title, search: info.search,
                               hash: info.hash, firstCopied: now, lastCopied: now, copies: 1,
-                              app: app, pinned: false, bytes: bytes)
+                              app: app, pinned: false, bytes: bytes, formats: formats, origin: origin)
         writePayload(payload, id: entry.id)
         entries.append(entry)
         sortEntries()
@@ -114,7 +139,13 @@ final class ClipboardStore {
             return Info(kind: .file, title: title, search: fold(files.map(\.path).joined(separator: " ")),
                         hash: sha(Data(files.map(\.path).joined(separator: "\n").utf8)))
         }
-        if let png = payload.first?["public.png"] ?? payload.first?["public.jpeg"] {
+        // Word, Pages, Keynote… also put a picture of the selection on the pasteboard:
+        // when real text is present, it is a text copy, not an image copy.
+        let hasText = payload.contains { d in
+            (d["public.utf8-plain-text"].flatMap { String(data: $0, encoding: .utf8) }?
+                .contains { !$0.isWhitespace } ?? false) || d["public.rtf"] != nil
+        }
+        if !hasText, let first = payload.first, let png = Self.imageKeys.lazy.compactMap({ first[$0] }).first {
             var title = "Görsel"
             if let rep = NSBitmapImageRep(data: png) { title += " \(rep.pixelsWide)×\(rep.pixelsHigh)" }
             return Info(kind: .image, title: title, search: fold(title), hash: sha(png))
@@ -129,6 +160,11 @@ final class ClipboardStore {
             .map { $0.trimmingCharacters(in: .whitespaces) }.joined(separator: " ⏎ ")
         return Info(kind: isLink ? .link : .text, title: oneLine,
                     search: fold(String(text.prefix(5000))), hash: sha(Data(text.utf8)))
+    }
+
+    private static func decodeText(_ d: Data) -> String? {
+        if d.starts(with: [0xFF, 0xFE]) || d.starts(with: [0xFE, 0xFF]) { return String(data: d, encoding: .utf16) }
+        return String(data: d, encoding: .utf16LittleEndian) ?? String(data: d, encoding: .macOSRoman)
     }
 
     static func plainText(_ payload: [[String: Data]]) -> String? {
@@ -153,7 +189,7 @@ final class ClipboardStore {
 
     func image(for entry: ClipEntry) -> NSImage? {
         guard entry.kind == .image, let p = payload(for: entry)?.first,
-              let d = p["public.png"] ?? p["public.jpeg"] ?? p["public.tiff"] else { return nil }
+              let d = Self.imageKeys.lazy.compactMap({ p[$0] }).first else { return nil }
         return NSImage(data: d)
     }
 
