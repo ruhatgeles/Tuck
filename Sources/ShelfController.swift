@@ -11,6 +11,7 @@ final class ShelfController: NSObject, NSWindowDelegate, NSDraggingDestination {
     private var flashing = false
     private let clipboard: ClipboardController
     private var tabs: PopoverTabsViewController?
+    private var outsideClickMonitor: Any?
 
     init(clipboard: ClipboardController) {
         self.clipboard = clipboard
@@ -37,6 +38,10 @@ final class ShelfController: NSObject, NSWindowDelegate, NSDraggingDestination {
         RunLoop.main.add(t, forMode: .common)
         purgeTimer = t
 
+        // Debug aid: `Tuck --show-popover` opens the menu bar popover at launch.
+        if CommandLine.arguments.contains("--show-popover") {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1) { [weak self] in self?.openPopover(tab: nil) }
+        }
         // Debug aid: `Tuck --show-dropzone` shows the drop box once at launch.
         if CommandLine.arguments.contains("--show-dropzone") {
             DispatchQueue.main.asyncAfter(deadline: .now() + 1) { [weak self] in self?.dropZone.show(holdFor: 3) }
@@ -102,6 +107,7 @@ final class ShelfController: NSObject, NSWindowDelegate, NSDraggingDestination {
         add("Panodakini rafa ekle", #selector(pasteClipboard))
         add("Raf klasörünü Finder'da aç", #selector(openFolder))
         menu.addItem(.separator())
+        add("Dışarı tıklanınca kapat", #selector(toggleCloseOutside), state: Settings.closeOnOutsideClick)
         add("Sürüklerken kutuyu göster", #selector(toggleDropZone), state: dropZone.enabled)
         add("Kutuyu şimdi göster", #selector(previewDropZone))
         menu.addItem(.separator())
@@ -114,6 +120,7 @@ final class ShelfController: NSObject, NSWindowDelegate, NSDraggingDestination {
     @objc private func openClipboard() { openPopover(tab: 1) }
     @objc private func pasteClipboard() { if store.addFromClipboard() { flash() } }
     @objc private func openFolder() { NSWorkspace.shared.open(store.root) }
+    @objc private func toggleCloseOutside() { Settings.closeOnOutsideClick.toggle() }
     @objc private func toggleDropZone() { dropZone.enabled.toggle() }
     @objc private func previewDropZone() {
         dropZone.show(holdFor: 3)
@@ -140,7 +147,9 @@ final class ShelfController: NSObject, NSWindowDelegate, NSDraggingDestination {
         let tabsVC = PopoverTabsViewController(shelf: shelfVC, clipboard: clipVC)
         if let tab { tabsVC.select(tab) }
         let p = NSPopover()
-        p.behavior = .transient
+        // .transient alone is not reliable for an accessory app (e.g. with a nested info
+        // popover open), so outside clicks are also caught explicitly below.
+        p.behavior = Settings.closeOnOutsideClick ? .transient : .applicationDefined
         p.animates = false
         p.contentViewController = tabsVC
         p.delegate = self
@@ -150,6 +159,11 @@ final class ShelfController: NSObject, NSWindowDelegate, NSDraggingDestination {
         popover = p
         NSApp.activate(ignoringOtherApps: true)
         p.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
+        if Settings.closeOnOutsideClick {
+            outsideClickMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) {
+                [weak self] _ in self?.popover?.performClose(nil)
+            }
+        }
     }
 
     // MARK: - Drop on the menu bar icon
@@ -159,14 +173,20 @@ final class ShelfController: NSObject, NSWindowDelegate, NSDraggingDestination {
         return src === table
     }
 
+    /// Only real content drags count; e.g. ⌘-dragging menu bar icons over the tray is ignored.
+    private func isContentDrag(_ info: NSDraggingInfo) -> Bool {
+        guard !isOwnDrag(info), let types = info.draggingPasteboard.types else { return false }
+        return !Set(types).isDisjoint(with: ShelfStore.acceptedTypes)
+    }
+
     func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation {
-        if isOwnDrag(sender) { return [] }
+        guard isContentDrag(sender) else { return [] }
         item.button?.highlight(true)
         return .copy
     }
 
     func draggingUpdated(_ sender: NSDraggingInfo) -> NSDragOperation {
-        isOwnDrag(sender) ? [] : .copy
+        isContentDrag(sender) ? .copy : []
     }
 
     func draggingExited(_ sender: NSDraggingInfo?) {
@@ -175,7 +195,7 @@ final class ShelfController: NSObject, NSWindowDelegate, NSDraggingDestination {
 
     func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
         item.button?.highlight(false)
-        guard !isOwnDrag(sender), store.ingest(sender.draggingPasteboard) else { return false }
+        guard isContentDrag(sender), store.ingest(sender.draggingPasteboard) else { return false }
         flash()
         dropZone.hide()
         return true
@@ -184,6 +204,8 @@ final class ShelfController: NSObject, NSWindowDelegate, NSDraggingDestination {
 
 extension ShelfController: NSPopoverDelegate {
     func popoverDidClose(_ notification: Notification) {
+        if let outsideClickMonitor { NSEvent.removeMonitor(outsideClickMonitor) }
+        outsideClickMonitor = nil
         popover = nil
         viewController = nil
         tabs = nil

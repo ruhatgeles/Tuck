@@ -83,13 +83,6 @@ final class ClipboardStore {
                     }
                 }
             }
-            // Keep one image representation: PNG is far smaller than TIFF.
-            if let tiff = dict["public.tiff"] {
-                if dict["public.png"] == nil, let png = NSBitmapImageRep(data: tiff)?.representation(using: .png, properties: [:]) {
-                    dict["public.png"] = png
-                }
-                if dict["public.png"] != nil { dict["public.tiff"] = nil }
-            }
             if !dict.isEmpty { payload.append(dict) }
         }
         // Last resort: let AppKit convert whatever text the pasteboard has.
@@ -97,11 +90,52 @@ final class ClipboardStore {
             payload = [["public.utf8-plain-text": Data(str.utf8)]]
         }
         guard !payload.isEmpty else { return false }
-        let bytes = payload.reduce(0) { $0 + $1.values.reduce(0) { $0 + $1.count } }
-        guard bytes <= Self.maxEntryBytes else { return false }
-
-        guard let info = Self.describe(payload) else { return false }
+        let rawBytes = payload.reduce(0) { $0 + $1.values.reduce(0) { $0 + $1.count } }
+        // Raw TIFF screenshots can be far bigger than the PNG we keep: allow some slack here.
+        guard rawBytes <= Self.maxEntryBytes * 4 else { return false }
         let now = Date()
+
+        // Image conversion and hashing of big copies happen off the main thread, so
+        // Tuck (and the menu bar items it owns) never hitch on a large screenshot.
+        if rawBytes > 256 * 1024 {
+            work.async {
+                guard let processed = Self.process(payload) else { return }
+                DispatchQueue.main.async {
+                    self.commit(processed.payload, info: processed.info, formats: formats,
+                                app: app, origin: origin, at: now)
+                }
+            }
+            return true
+        }
+        guard let processed = Self.process(payload) else { return false }
+        return commit(processed.payload, info: processed.info, formats: formats, app: app, origin: origin, at: now)
+    }
+
+    private let work = DispatchQueue(label: "tuck.clip.work", qos: .userInitiated)
+
+    /// Pure, thread-safe: keeps one image representation (PNG) and describes the payload.
+    private static func process(_ raw: [[String: Data]]) -> (payload: [[String: Data]], info: Info)? {
+        let payload = raw.map { item -> [String: Data] in
+            var dict = item
+            if let tiff = dict["public.tiff"] {
+                if dict["public.png"] == nil,
+                   let png = NSBitmapImageRep(data: tiff)?.representation(using: .png, properties: [:]) {
+                    dict["public.png"] = png
+                }
+                if dict["public.png"] != nil { dict["public.tiff"] = nil }
+            }
+            return dict
+        }
+        let bytes = payload.reduce(0) { $0 + $1.values.reduce(0) { $0 + $1.count } }
+        guard bytes <= maxEntryBytes, let info = describe(payload) else { return nil }
+        return (payload, info)
+    }
+
+    /// Main thread: insert or bump the entry.
+    @discardableResult
+    private func commit(_ payload: [[String: Data]], info: Info, formats: [String],
+                        app: String?, origin: String?, at now: Date) -> Bool {
+        let bytes = payload.reduce(0) { $0 + $1.values.reduce(0) { $0 + $1.count } }
 
         if let i = entries.firstIndex(where: { $0.hash == info.hash }) {
             entries[i].lastCopied = now

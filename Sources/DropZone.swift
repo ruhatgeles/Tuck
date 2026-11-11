@@ -81,9 +81,12 @@ final class DropZoneController: NSObject {
         show()
     }
 
+    /// Presses in the menu bar strip (⌘-dragging icons). Uses the physical bar height so it
+    /// also works when the menu bar auto-hides (visibleFrame then reaches the top).
     private static func isInMenuBar(_ p: NSPoint) -> Bool {
         guard let screen = NSScreen.screens.first(where: { NSMouseInRect(p, $0.frame, false) }) else { return false }
-        return p.y >= screen.visibleFrame.maxY
+        let barHeight = max(NSStatusBar.system.thickness, screen.safeAreaInsets.top, 24) + 4
+        return p.y >= screen.frame.maxY - barHeight
     }
 
     // MARK: - Panel

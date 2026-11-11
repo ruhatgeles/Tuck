@@ -8,7 +8,7 @@ final class ClipInfoViewController: NSViewController {
 
     static func show(for entry: ClipEntry, store: ClipboardStore, relativeTo view: NSView) {
         let p = NSPopover()
-        p.behavior = .transient
+        p.behavior = Settings.closeOnOutsideClick ? .transient : .semitransient
         p.animates = false
         p.contentViewController = ClipInfoViewController(entry: entry, store: store)
         p.show(relativeTo: view.bounds, of: view, preferredEdge: .maxX)

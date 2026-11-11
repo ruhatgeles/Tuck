@@ -183,7 +183,7 @@ final class ClipboardController: NSObject, NSWindowDelegate {
 
     /// Debug log (enable: `defaults write io.github.ruhatgeles.Tuck clipDebug -bool true`).
     /// Written to ~/Library/Logs/Tuck/clipboard.log; never contains clipboard contents.
-    private static func debugLog(_ line: String) {
+    static func debugLog(_ line: String) {
         let dir = FileManager.default.urls(for: .libraryDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("Logs/Tuck", isDirectory: true)
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
@@ -200,13 +200,22 @@ final class ClipboardController: NSObject, NSWindowDelegate {
     /// Something was dropped on the clipboard list: record it and put it on the clipboard.
     @discardableResult
     func addFromDrop(_ pb: NSPasteboard) -> Bool {
-        guard store.capture(pb, app: nil, origin: "drop"), let entry = store.entries.first(where: { !$0.pinned })
-            ?? store.entries.first else { return false }
+        guard store.capture(pb, app: nil, origin: "drop") else { return false }
+        // Put exactly what was dropped on the clipboard (capture may finish asynchronously
+        // for big images, so don't read it back from the history).
+        let items: [NSPasteboardItem] = (pb.pasteboardItems ?? []).map { src in
+            let item = NSPasteboardItem()
+            for t in src.types where ClipboardStore.keptTypes.contains(t.rawValue) {
+                if let d = src.data(forType: t) { item.setData(d, forType: t) }
+            }
+            return item
+        }.filter { !$0.types.isEmpty }
         let general = NSPasteboard.general
-        if store.write(entry, to: general) {
-            ownChange = general.changeCount
-            lastChange = general.changeCount
-        }
+        general.clearContents()
+        if items.isEmpty, let s = pb.string(forType: .string) { general.setString(s, forType: .string) }
+        else { general.writeObjects(items) }
+        ownChange = general.changeCount
+        lastChange = general.changeCount
         return true
     }
 
@@ -326,8 +335,10 @@ final class ClipboardController: NSObject, NSWindowDelegate {
         p.makeKeyAndOrderFront(nil)
         vc.focusSearch()
         // Any click in another app closes the panel, even if it never became key.
-        outsideClickMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) {
-            [weak self] _ in self?.closePanel()
+        if Settings.closeOnOutsideClick {
+            outsideClickMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) {
+                [weak self] _ in self?.closePanel()
+            }
         }
     }
 
@@ -343,7 +354,7 @@ final class ClipboardController: NSObject, NSWindowDelegate {
     func windowDidResignKey(_ notification: Notification) {
         // Clicking anywhere else closes the panel (like a menu) — but not when focus
         // just moved to one of our own windows, e.g. the item info popover.
-        guard (notification.object as? NSWindow) === panel else { return }
+        guard Settings.closeOnOutsideClick, (notification.object as? NSWindow) === panel else { return }
         DispatchQueue.main.async { [weak self] in
             if NSApp.keyWindow == nil { self?.closePanel() }
         }
@@ -385,6 +396,7 @@ final class ClipboardController: NSObject, NSWindowDelegate {
         let ax = AXIsProcessTrusted()
         menu.addItem(item(ax ? "Seçince otomatik yapıştır" : "Seçince otomatik yapıştır (izin gerekli)",
                           #selector(toggleAutoPaste), on: autoPaste))
+        menu.addItem(item("Dışarı tıklanınca kapat", #selector(toggleCloseOutside), on: Settings.closeOnOutsideClick))
         menu.addItem(item("Görselleri kaydet", #selector(toggleImages), on: saveImages))
         menu.addItem(item("Dosyaları kaydet", #selector(toggleFiles), on: saveFiles))
         menu.addItem(item("Çıkışta geçmişi temizle (sabitler hariç)", #selector(toggleClearOnQuit), on: clearOnQuit))
@@ -409,6 +421,7 @@ final class ClipboardController: NSObject, NSWindowDelegate {
     @objc private func ignoreNextAction() { ignoreNextCopy() }
     @objc private func setHotKey(_ sender: NSMenuItem) { hotKeyIndex = sender.tag }
     @objc private func setLimit(_ sender: NSMenuItem) { store.limit = sender.tag }
+    @objc private func toggleCloseOutside() { Settings.closeOnOutsideClick.toggle() }
     @objc private func toggleImages() { saveImages.toggle() }
     @objc private func toggleFiles() { saveFiles.toggle() }
     @objc private func toggleClearOnQuit() { clearOnQuit.toggle() }
