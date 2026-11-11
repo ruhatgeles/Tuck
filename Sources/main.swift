@@ -1,18 +1,21 @@
 import AppKit
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
+    private var clipboard: ClipboardController!
     private var shelf: ShelfController!
     private var hider: BarHider!
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         // Creation order = right-to-left placement on first launch:
         // [ ...hidden icons... | separator ][ toggle ][ shelf ]
-        shelf = ShelfController()
+        clipboard = ClipboardController()
+        shelf = ShelfController(clipboard: clipboard)
         hider = BarHider()
     }
 
     func applicationWillTerminate(_ notification: Notification) {
         shelf.store.flush()
+        clipboard.applicationWillTerminate()
     }
 }
 

@@ -5,8 +5,8 @@
 <h1 align="center">Tuck</h1>
 
 <p align="center">
-  <b>Tidy menu bar + a drop box that remembers.</b><br>
-  A tiny, native macOS menu bar app: hide the icons you don't need, and tuck away files, text, images and links for later.
+  <b>Tidy menu bar, a drop box that remembers, and clipboard history.</b><br>
+  A tiny, native macOS menu bar app: hide the icons you don't need, tuck away files, text, images and links for later, and get back anything you copied.
 </p>
 
 <p align="center">
@@ -48,6 +48,16 @@
 - Real thumbnails for images, PDFs and videos; size info for every item.
 - **No extra disk space** for files on the same disk: APFS clones are used, not full copies.
 
+### 📋 Clipboard history
+
+- Everything you copy (text, rich text, links, images, files) is kept **until you delete it**. History size is 200 by default (50–1000), and **📌 pinned items are never removed**, not even by *Clear history*.
+- Press **⇧⌘C** anywhere: a searchable list opens at your pointer. Type to filter (case-, accent- and Turkish‑i‑insensitive).
+- **↩** pastes into the app you were in, **⇧↩** pastes as plain text, **⌘↩** only copies, **⌘1…9** quick picks.
+- **⌥P** pin / unpin, **⌥⌫** delete, **⌥⌘⌫** clear (pins kept). Right‑click an item to send it to the shelf or ignore its app.
+- Also lives in the menu bar popover (**Raf | Pano** tabs).
+- **Private by default:** password managers and other "concealed / transient" copies are never recorded (1Password, Apple Passwords, KeeWeb…). History is stored only on your Mac in a folder readable only by you. Pause recording or skip the next copy from the ⚙︎ menu.
+- Auto‑paste needs *Accessibility* permission (macOS asks once). Without it, Tuck just copies and you press ⌘V.
+
 ## Install
 
 1. Download **Tuck.zip** from the [latest release](https://github.com/ruhatgeles/Tuck/releases/latest) and unzip it.
@@ -74,17 +84,15 @@ cd Tuck
 | Want to… | Do this |
 |---|---|
 | Choose which icons hide | ⌘‑drag them left of `│` |
+| Change the clipboard shortcut | ⚙︎ in the clipboard list → *Kısayol* (⇧⌘C, ⇧⌘V, ⌥⌘V, ⌃⌥V or off) |
+| Coming from Maccy | Quit Maccy (both use ⇧⌘C), or pick another shortcut |
 | Turn the drop box off | Right‑click tray icon → *Show box while dragging* |
 | See where shelf files live | Right‑click tray icon → *Open shelf folder* (`~/Library/Application Support/Tuck/Shelf`) |
 | Fine‑tune hiding on an unusual display | `defaults write io.github.ruhatgeles.Tuck collapsedLength 600` |
 
 ## Privacy
 
-Tuck makes no network connections and collects nothing. Shelf items are stored locally in your Library folder and are removed when you delete them or after 30 days (unless pinned).
-
-## Roadmap
-
-- [ ] Clipboard history (search, pins, global shortcut, paste) 
+Tuck makes no network connections and collects nothing. Shelf items are stored locally in your Library folder and are removed when you delete them or after 30 days (unless pinned). Clipboard history lives in `~/Library/Application Support/Tuck/Clipboard` (permissions `700`), skips password‑manager copies, and can be cleared or paused at any time.
 
 ## License
 
@@ -98,6 +106,7 @@ Tuck makes no network connections and collects nothing. Shelf items are stored l
 
 - **Üst çubuk ikonlarını gizle:** ⌘ basılı tutup ikonları `│` çizgisinin soluna sürükle, sonra **‹ / ›** ile göster/gizle.
 - **Bırakma kutusu:** Herhangi bir şeyi sürüklemeye başladığında üst bardan bir kutu açılır. Bıraktığın dosya, metin, görsel veya bağlantı sen silene kadar ya da 30 gün dolana kadar rafta kalır. 📌 ile sabitlenenler hiç silinmez.
+- **Pano geçmişi:** Kopyaladığın her şey sen silene kadar kalır. **⇧⌘C** ile her yerden aç, ara, ↩ ile yapıştır. 📌 sabitlenenler "temizle" ile bile silinmez. Şifre yöneticilerinden kopyalananlar hiç kaydedilmez.
 - **Ekstra yer kaplamaz:** Aynı diskteki dosyalar APFS klonu olarak saklanır.
 
 **Kurulum:** [Son sürümden](https://github.com/ruhatgeles/Tuck/releases/latest) `Tuck.zip`'i indir, `Tuck.app`'i Uygulamalar klasörüne taşı, ilk açılışta **sağ tık → Aç** de.

@@ -82,7 +82,18 @@ final class BarHider: NSObject {
         updateIcon()
         autoCollapseTimer?.invalidate()
         guard autoCollapse else { return }
-        let t = Timer(timeInterval: autoCollapseDelay, repeats: false) { [weak self] _ in self?.collapse() }
+        scheduleAutoCollapse(after: autoCollapseDelay)
+    }
+
+    /// Never collapse while a mouse button is held: the user may be ⌘-dragging icons,
+    /// and resizing the separator mid-drag makes the whole menu bar re-layout (stutter).
+    private func scheduleAutoCollapse(after delay: TimeInterval) {
+        autoCollapseTimer?.invalidate()
+        let t = Timer(timeInterval: delay, repeats: false) { [weak self] _ in
+            guard let self, !self.isCollapsed else { return }
+            if NSEvent.pressedMouseButtons != 0 { self.scheduleAutoCollapse(after: 2); return }
+            self.collapse()
+        }
         t.tolerance = 2
         RunLoop.main.add(t, forMode: .common)
         autoCollapseTimer = t

@@ -1,16 +1,23 @@
 import AppKit
 
 /// Watches for drags started in any app and slides a drop box down from the menu bar,
-/// right under the shelf icon. Cheap: a single global mouse-dragged monitor that checks
-/// the drag pasteboard at most ~7×/s, only while the mouse button is held.
+/// right under the shelf icon.
+///
+/// Cost: only mouse-*down* events are observed permanently. A drag monitor is attached
+/// for a moment after a press (max 3 s / until the drag is recognised or the button is
+/// released), so Tuck does not wake for every pixel of every drag. Presses in the menu
+/// bar (⌘-dragging icons around) are ignored entirely.
 final class DropZoneController: NSObject {
     private let store: ShelfStore
     private let anchor: () -> NSView?
-    private var monitor: Any?
+    private var downMonitor: Any?
+    private var dragMonitor: Any?
+    private var armedAt: TimeInterval = 0
+    private let dragPasteboard = NSPasteboard(name: .drag)
     private var panel: NSPanel?
     private var zone: DropZoneView?
     private var watchTimer: Timer?
-    private var lastDragChange = NSPasteboard(name: .drag).changeCount
+    private lazy var lastDragChange = dragPasteboard.changeCount
     private var lastCheck: TimeInterval = 0
     private var isHiding = false
     /// Uptime until which the box stays open even with the mouse button up
@@ -34,27 +41,49 @@ final class DropZoneController: NSObject {
     }
 
     private func start() {
-        guard monitor == nil else { return }
-        monitor = NSEvent.addGlobalMonitorForEvents(matching: .leftMouseDragged) { [weak self] _ in
-            self?.mouseDragged()
+        guard downMonitor == nil else { return }
+        _ = lastDragChange
+        downMonitor = NSEvent.addGlobalMonitorForEvents(matching: .leftMouseDown) { [weak self] e in
+            self?.mouseDown(e)
         }
     }
 
     private func stop() {
-        if let monitor { NSEvent.removeMonitor(monitor) }
-        monitor = nil
+        if let downMonitor { NSEvent.removeMonitor(downMonitor) }
+        downMonitor = nil
+        disarm()
     }
 
-    private func mouseDragged() {
-        guard panel == nil else { return }
-        let now = ProcessInfo.processInfo.systemUptime
-        guard now - lastCheck > 0.15 else { return }
+    private func mouseDown(_ event: NSEvent) {
+        guard panel == nil, !Self.isInMenuBar(NSEvent.mouseLocation)
+        else { return }
+        armedAt = now
+        guard dragMonitor == nil else { return }
+        dragMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDragged, .leftMouseUp]) { [weak self] e in
+            self?.armedEvent(e)
+        }
+    }
+
+    private func disarm() {
+        if let dragMonitor { NSEvent.removeMonitor(dragMonitor) }
+        dragMonitor = nil
+    }
+
+    private func armedEvent(_ event: NSEvent) {
+        if event.type == .leftMouseUp || now - armedAt > 3 || panel != nil { disarm(); return }
+        guard now - lastCheck > 0.1 else { return }
         lastCheck = now
-        let pb = NSPasteboard(name: .drag)
-        guard pb.changeCount != lastDragChange else { return }
-        lastDragChange = pb.changeCount
-        guard let types = pb.types, !Set(types).isDisjoint(with: ShelfStore.acceptedTypes) else { return }
+        let count = dragPasteboard.changeCount
+        guard count != lastDragChange else { return }
+        lastDragChange = count
+        disarm()
+        guard let types = dragPasteboard.types, !Set(types).isDisjoint(with: ShelfStore.acceptedTypes) else { return }
         show()
+    }
+
+    private static func isInMenuBar(_ p: NSPoint) -> Bool {
+        guard let screen = NSScreen.screens.first(where: { NSMouseInRect(p, $0.frame, false) }) else { return false }
+        return p.y >= screen.visibleFrame.maxY
     }
 
     // MARK: - Panel

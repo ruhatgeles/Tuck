@@ -16,7 +16,7 @@ cp Resources/AppIcon.icns "$APP/Contents/Resources/AppIcon.icns"
 compile() { # $1 = arch, $2 = output
   swiftc -O -swift-version 5 \
     -target "$1-apple-macos13.0" \
-    -framework AppKit -framework ServiceManagement -framework QuickLookThumbnailing \
+    -framework AppKit -framework ServiceManagement -framework QuickLookThumbnailing -framework Carbon \
     Sources/*.swift -o "$2"
 }
 

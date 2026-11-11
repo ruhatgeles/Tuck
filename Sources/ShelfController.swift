@@ -9,9 +9,15 @@ final class ShelfController: NSObject, NSWindowDelegate, NSDraggingDestination {
     private var dropZone: DropZoneController!
     private var purgeTimer: Timer?
     private var flashing = false
+    private let clipboard: ClipboardController
+    private var tabs: PopoverTabsViewController?
 
-    override init() {
+    init(clipboard: ClipboardController) {
+        self.clipboard = clipboard
         super.init()
+        clipboard.shelf = store
+        clipboard.closePopover = { [weak self] in self?.popover?.performClose(nil) }
+        clipboard.openPopoverTab = { [weak self] index in self?.openPopover(tab: index) }
         item.autosaveName = "tuck.shelf"
         if let b = item.button {
             b.target = self
@@ -87,6 +93,12 @@ final class ShelfController: NSObject, NSWindowDelegate, NSDraggingDestination {
             if let state { mi.state = state ? .on : .off }
             menu.addItem(mi)
         }
+        let clipTitle = clipboard.hotKeyTitle.map { "Pano geçmişini aç (\($0))" } ?? "Pano geçmişini aç"
+        add(clipTitle, #selector(openClipboard))
+        let clipSettings = NSMenuItem(title: "Pano ayarları", action: nil, keyEquivalent: "")
+        clipSettings.submenu = clipboard.settingsMenu()
+        menu.addItem(clipSettings)
+        menu.addItem(.separator())
         add("Panodakini rafa ekle", #selector(pasteClipboard))
         add("Raf klasörünü Finder'da aç", #selector(openFolder))
         menu.addItem(.separator())
@@ -99,6 +111,7 @@ final class ShelfController: NSObject, NSWindowDelegate, NSDraggingDestination {
         item.menu = nil
     }
 
+    @objc private func openClipboard() { openPopover(tab: 1) }
     @objc private func pasteClipboard() { if store.addFromClipboard() { flash() } }
     @objc private func openFolder() { NSWorkspace.shared.open(store.root) }
     @objc private func toggleDropZone() { dropZone.enabled.toggle() }
@@ -110,15 +123,30 @@ final class ShelfController: NSObject, NSWindowDelegate, NSDraggingDestination {
 
     private func togglePopover() {
         if let p = popover, p.isShown { p.performClose(nil); return }
+        openPopover(tab: nil)
+    }
+
+    /// - Parameter tab: 0 = shelf, 1 = clipboard, nil = last used.
+    func openPopover(tab: Int?) {
+        if let tab, let tabs, popover?.isShown == true { tabs.select(tab); return }
         guard let button = item.button else { return }
         store.purgeExpired()
-        let vc = ShelfViewController(store: store)
+        // Remember where the user was, so a chosen clipboard item is pasted there.
+        let front = NSWorkspace.shared.frontmostApplication
+        clipboard.previousApp = front == NSRunningApplication.current ? nil : front
+
+        let shelfVC = ShelfViewController(store: store)
+        let clipVC = ClipboardViewController(controller: clipboard, inPanel: false)
+        let tabsVC = PopoverTabsViewController(shelf: shelfVC, clipboard: clipVC)
+        if let tab { tabsVC.select(tab) }
         let p = NSPopover()
         p.behavior = .transient
         p.animates = false
-        p.contentViewController = vc
+        p.contentViewController = tabsVC
         p.delegate = self
-        viewController = vc
+        viewController = shelfVC
+        tabs = tabsVC
+        clipboard.popoverVC = clipVC
         popover = p
         NSApp.activate(ignoringOtherApps: true)
         p.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
@@ -158,5 +186,6 @@ extension ShelfController: NSPopoverDelegate {
     func popoverDidClose(_ notification: Notification) {
         popover = nil
         viewController = nil
+        tabs = nil
     }
 }
